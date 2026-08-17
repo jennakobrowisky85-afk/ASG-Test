@@ -6,7 +6,7 @@ import {
 import {
   Compass, TrendingUp, TrendingDown, Users, Target, DollarSign,
   ChevronDown, ChevronRight, ArrowUpRight, Radio, Sparkles, RefreshCw,
-  CheckCircle2, Circle, Clock, ExternalLink,
+  CheckCircle2, Circle, Clock, ExternalLink, Gauge,
 } from "lucide-react";
 
 // ---------- design tokens ----------
@@ -83,6 +83,74 @@ const decisions = [
 
 const fmt = (n) => n >= 1000000 ? `R${(n / 1000000).toFixed(2)}M` : n >= 1000 ? `R${(n / 1000).toFixed(0)}K` : `R${n}`;
 const pct = (n) => `${n}%`;
+
+// ---------- activity & targets: daily activity report roll-up ----------
+// Targets are per-consultant, per working day. "Leads Accepted" target is an assumption
+// (not specified) — flagged for confirmation, easy to change in one place below.
+const METRICS = [
+  { key: "leadsAccepted", label: "Leads Accepted", short: "Leads", daily: 3, currency: false },
+  { key: "contactsMade", label: "Contacts Made", short: "Contacts", daily: 2, currency: false },
+  { key: "quotesGenerated", label: "Quotes Generated", short: "Quotes", daily: 2, currency: false },
+  { key: "quoteValue", label: "Quote Value", short: "Quote R", daily: 25000, currency: true },
+  { key: "dealsClosed", label: "Deals Closed", short: "Deals", daily: 1, currency: false },
+  { key: "dealsValue", label: "Deals Value", short: "Deals R", daily: 50000, currency: true },
+];
+
+const PERIOD_MULT = { day: 1, week: 5, month: 22 }; // 5-day week, ~22 working days/month
+
+// "Now" reference for pacing — Wednesday, 3:00pm, week-day 3 of 5, month working-day 12 of 22.
+// Pace re-derives from elapsed working days (+ today's partial day), not a flat calendar check.
+const DAY_FRAC = 6 / 8;                    // 6 of 8 working hours elapsed today
+const WEEK_FRAC = (2 + DAY_FRAC) / 5;      // 2 completed days + today's fraction, of a 5-day week
+const MONTH_FRAC = (11 + DAY_FRAC) / 22;   // 11 completed working days + today's fraction, of 22
+const PERIOD_FRAC = { day: DAY_FRAC, week: WEEK_FRAC, month: MONTH_FRAC };
+
+const STATUS_COLOR = { green: T.sage, amber: T.gold, red: T.rust };
+const STATUS_LABEL = { green: "Target met / exceeded", amber: "On pace", red: "Behind pace" };
+
+function paceStatus(actual, target, frac) {
+  if (actual >= target) return "green";
+  if (actual >= target * frac) return "amber";
+  return "red";
+}
+function worstStatus(list) {
+  if (list.includes("red")) return "red";
+  if (list.includes("amber")) return "amber";
+  return "green";
+}
+function mulberry32(seed) {
+  return function () {
+    seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const MANAGER_NAMES = ["Riaan v/d Merwe", "Charlene Adams", "Deon Retief", "Simone Naidoo", "Werner Botes", "Palesa Khumalo"];
+const FIRST_NAMES = ["Hanel", "Roxanne", "Stewart", "Annerie", "Janine", "Tracy-Lee", "Gaynor", "Ashly", "Lucy", "Trevor", "Beverley", "Adriana", "Stephany", "Lynda", "Sheila", "Tamara", "Maria", "Chantelle", "Werner", "Pieter", "Michelle", "Devon", "Kayla", "Ruan", "Nadia", "Bianca", "Cornel", "Elmarie", "Francois", "Gideon", "Zanele", "Kabelo", "Thandiwe", "Johan"];
+const LAST_NAMES = ["Botha", "B.", "K.", "P.", "M.", "S.", "F.", "D.", "Nel", "Pretorius", "van Wyk", "Joubert", "Kruger", "de Beer", "Meyer", "Coetzee", "Fourie", "Steyn", "Marais", "Human"];
+const CONSULTANTS_PER_MANAGER = 17;
+
+const activityConsultants = Array.from({ length: MANAGER_NAMES.length * CONSULTANTS_PER_MANAGER }, (_, i) => {
+  const rng = mulberry32(2000 + i * 131);
+  const perf = 0.55 + rng() * 1.25; // spread of performers, roughly 0.55x to 1.8x pace
+  const metrics = {};
+  METRICS.forEach((m) => {
+    const round = (v) => (m.currency ? Math.round(v / 100) * 100 : Math.round(v));
+    metrics[m.key] = {
+      day: Math.max(0, round(m.daily * DAY_FRAC * perf * (0.65 + rng() * 0.7))),
+      week: Math.max(0, round(m.daily * 5 * WEEK_FRAC * perf * (0.7 + rng() * 0.6))),
+      month: Math.max(0, round(m.daily * 22 * MONTH_FRAC * perf * (0.75 + rng() * 0.5))),
+    };
+  });
+  return {
+    id: i,
+    name: `${FIRST_NAMES[i % FIRST_NAMES.length]} ${LAST_NAMES[(i * 3 + 7) % LAST_NAMES.length]}`,
+    managerIndex: Math.floor(i / CONSULTANTS_PER_MANAGER),
+    metrics,
+  };
+});
 
 // ---------- small UI atoms ----------
 function UtmChip({ platform, campaign, adgroup, ad }) {
@@ -414,6 +482,167 @@ function DecisionsTab() {
   );
 }
 
+function MetricCell({ metric, actual, target, frac }) {
+  const status = paceStatus(actual, target, frac);
+  const display = metric.currency ? fmt(actual) : actual.toLocaleString();
+  const displayTarget = metric.currency ? fmt(target) : target.toLocaleString();
+  return (
+    <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <span style={{ width: 8, height: 8, borderRadius: "50%", background: STATUS_COLOR[status], flexShrink: 0 }} />
+      <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{display}</span>
+      <span style={{ fontFamily: "IBM Plex Mono", fontSize: 10, color: T.textLo }}>/{displayTarget}</span>
+    </span>
+  );
+}
+
+function ExecMetricCard({ metric, actual, target, frac }) {
+  const status = paceStatus(actual, target, frac);
+  const pctToTarget = Math.min(100, (actual / target) * 100);
+  const expectedPct = Math.min(100, frac * 100);
+  return (
+    <div style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, padding: "16px 18px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+        <span style={{ color: T.textLo, fontSize: 10.5, letterSpacing: "0.06em", textTransform: "uppercase", fontFamily: "Inter" }}>{metric.label}</span>
+        <span style={{ width: 9, height: 9, borderRadius: "50%", background: STATUS_COLOR[status] }} />
+      </div>
+      <div style={{ fontFamily: "Fraunces", fontSize: 22, color: T.textHi, marginBottom: 2 }}>
+        {metric.currency ? fmt(actual) : actual.toLocaleString()}
+      </div>
+      <div style={{ fontFamily: "Inter", fontSize: 11, color: T.textLo, marginBottom: 10 }}>
+        of {metric.currency ? fmt(target) : target.toLocaleString()} target
+      </div>
+      <div style={{ position: "relative", height: 6, background: T.bgRaised, borderRadius: 3, overflow: "hidden" }}>
+        <div style={{ width: `${pctToTarget}%`, height: "100%", background: STATUS_COLOR[status], borderRadius: 3 }} />
+        <div style={{ position: "absolute", left: `${expectedPct}%`, top: -2, width: 2, height: 10, background: T.textHi, opacity: 0.55 }} title="Expected-to-date pace" />
+      </div>
+    </div>
+  );
+}
+
+function ActivityTab() {
+  const [period, setPeriod] = useState("day");
+  const [openManager, setOpenManager] = useState(null);
+  const frac = PERIOD_FRAC[period];
+  const mult = PERIOD_MULT[period];
+
+  const paceCaption = {
+    day: "Today · 6 of 8 working hours elapsed (75%)",
+    week: "This week · Wed, working day 3 of 5 (55% elapsed)",
+    month: "This month · working day 12 of 22 (53% elapsed)",
+  }[period];
+
+  const companyMetrics = METRICS.map((m) => {
+    const actual = activityConsultants.reduce((a, c) => a + c.metrics[m.key][period], 0);
+    const target = m.daily * mult * activityConsultants.length;
+    return { ...m, actual, target };
+  });
+
+  const managerRows = MANAGER_NAMES.map((name, mi) => {
+    const team = activityConsultants.filter((c) => c.managerIndex === mi);
+    const metricsAgg = METRICS.map((m) => {
+      const actual = team.reduce((a, c) => a + c.metrics[m.key][period], 0);
+      const target = m.daily * mult * team.length;
+      return { ...m, actual, target, status: paceStatus(actual, target, frac) };
+    });
+    return { name, team, metricsAgg, overall: worstStatus(metricsAgg.map((x) => x.status)) };
+  });
+
+  return (
+    <div>
+      <SectionLabel sub="Daily activity reports, rolled up by consultant, sales manager, and company-wide">Consultant Activity &amp; Targets</SectionLabel>
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 18 }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          {[["day", "Daily"], ["week", "Weekly"], ["month", "Monthly"]].map(([id, label]) => (
+            <button
+              key={id}
+              onClick={() => setPeriod(id)}
+              style={{
+                background: period === id ? T.bgRaised : "transparent",
+                border: `1px solid ${period === id ? T.gold : T.line}`,
+                color: period === id ? T.textHi : T.textMid,
+                borderRadius: 4, padding: "6px 14px", fontFamily: "Inter", fontSize: 12.5, cursor: "pointer",
+              }}
+            >{label}</button>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 14, fontSize: 11.5, fontFamily: "Inter", color: T.textMid, alignItems: "center", flexWrap: "wrap" }}>
+          {["green", "amber", "red"].map((s) => (
+            <span key={s} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: STATUS_COLOR[s] }} />
+              {STATUS_LABEL[s]}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div style={{ fontSize: 11.5, color: T.textLo, fontFamily: "Inter", marginBottom: 24, display: "flex", alignItems: "center", gap: 6 }}>
+        <Gauge size={12} /> {paceCaption} — expected-to-date pace recalculates daily off working days in the period
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginBottom: 34 }}>
+        {companyMetrics.map((m) => (
+          <ExecMetricCard key={m.key} metric={m} actual={m.actual} target={m.target} frac={frac} />
+        ))}
+      </div>
+
+      <SectionLabel sub={`6 sales managers · ${CONSULTANTS_PER_MANAGER} consultants each · ${activityConsultants.length} total`}>Sales Manager Rollup</SectionLabel>
+      <div style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, overflow: "hidden" }}>
+        <div style={{
+          display: "grid", gridTemplateColumns: "0.4fr 1.6fr repeat(6, 1fr)",
+          padding: "10px 16px", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.04em",
+          color: T.textLo, borderBottom: `1px solid ${T.line}`, fontFamily: "Inter",
+        }}>
+          <span></span><span>Manager</span>
+          {METRICS.map((m) => <span key={m.key}>{m.short}</span>)}
+        </div>
+        {managerRows.map((r, i) => {
+          const isOpen = openManager === r.name;
+          return (
+            <div key={r.name} style={{ borderBottom: i < managerRows.length - 1 ? `1px solid ${T.line}` : "none" }}>
+              <div
+                onClick={() => setOpenManager(isOpen ? null : r.name)}
+                style={{
+                  display: "grid", gridTemplateColumns: "0.4fr 1.6fr repeat(6, 1fr)",
+                  padding: "13px 16px", alignItems: "center", cursor: "pointer",
+                }}
+              >
+                <span style={{ width: 10, height: 10, borderRadius: "50%", background: STATUS_COLOR[r.overall] }} />
+                <span style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: "Inter", fontSize: 13, color: T.textHi }}>
+                  {isOpen ? <ChevronDown size={13} color={T.textLo} /> : <ChevronRight size={13} color={T.textLo} />}
+                  {r.name}
+                  <span style={{ color: T.textLo, fontSize: 11 }}>({r.team.length})</span>
+                </span>
+                {r.metricsAgg.map((m) => <MetricCell key={m.key} metric={m} actual={m.actual} target={m.target} frac={frac} />)}
+              </div>
+              {isOpen && (
+                <div style={{ padding: "0 16px 14px 46px" }}>
+                  <div style={{
+                    display: "grid", gridTemplateColumns: "1.5fr repeat(6, 1fr)",
+                    padding: "6px 4px", fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.04em",
+                    color: T.textLo, fontFamily: "Inter",
+                  }}>
+                    <span>Consultant</span>
+                    {METRICS.map((m) => <span key={m.key}>{m.short}</span>)}
+                  </div>
+                  {r.team.map((c) => {
+                    const rowMetrics = METRICS.map((m) => ({ ...m, actual: c.metrics[m.key][period], target: m.daily * mult }));
+                    return (
+                      <div key={c.id} style={{ display: "grid", gridTemplateColumns: "1.5fr repeat(6, 1fr)", padding: "8px 4px", alignItems: "center", borderTop: `1px solid ${T.line}` }}>
+                        <span style={{ fontFamily: "Inter", fontSize: 12.5, color: T.textHi }}>{c.name}</span>
+                        {rowMetrics.map((m) => <MetricCell key={m.key} metric={m} actual={m.actual} target={m.target} frac={frac} />)}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ---------- app ----------
 export default function App() {
   const [tab, setTab] = useState("overview");
@@ -421,6 +650,7 @@ export default function App() {
     { id: "overview", label: "Overview" },
     { id: "channels", label: "Channels & Attribution" },
     { id: "consultants", label: "Consultants" },
+    { id: "activity", label: "Activity & Targets" },
     { id: "audience", label: "Audience & Retargeting" },
     { id: "decisions", label: "Decisions & Budget" },
   ];
@@ -472,6 +702,7 @@ export default function App() {
         {tab === "overview" && <OverviewTab />}
         {tab === "channels" && <ChannelsTab />}
         {tab === "consultants" && <ConsultantsTab />}
+        {tab === "activity" && <ActivityTab />}
         {tab === "audience" && <AudienceTab />}
         {tab === "decisions" && <DecisionsTab />}
 

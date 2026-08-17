@@ -6,7 +6,8 @@ import {
 import {
   Compass, TrendingUp, TrendingDown, Users, Target, DollarSign,
   ChevronDown, ChevronRight, ArrowUpRight, Radio, Sparkles, RefreshCw,
-  CheckCircle2, Circle, Clock, ExternalLink, Gauge,
+  CheckCircle2, Circle, Clock, ExternalLink, Gauge, Globe, CalendarDays,
+  Timer, MapPin,
 } from "lucide-react";
 
 // ---------- design tokens ----------
@@ -151,6 +152,174 @@ const activityConsultants = Array.from({ length: MANAGER_NAMES.length * CONSULTA
     metrics,
   };
 });
+
+// ---------- markets: CRM pipeline, trip detail & seasonality ----------
+const MARKETS = [
+  { key: "asia", label: "Asia" },
+  { key: "australasia", label: "Australasia" },
+  { key: "middleEast", label: "Middle East" },
+  { key: "uk", label: "UK" },
+  { key: "eu", label: "EU" },
+  { key: "usa", label: "USA" },
+  { key: "southAmerica", label: "South America" },
+];
+
+const TRIP_TYPES = ["Big Five Safari", "Migration Safari", "Honeymoon Safari", "Family Safari", "Safari & Beach", "Gorilla Trekking", "Rail Journey", "Luxury Fly-In"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// Peak = 1 Nov–end Mar, Off-Peak = 1 May–end Aug, Shoulder = Apr & Sep (as briefed).
+// October wasn't specified in the brief — shown here as Shoulder, bridging Sep and Nov. Flag if it should sit elsewhere.
+const SEASON_BAND = { Jan: "peak", Feb: "peak", Mar: "peak", Apr: "shoulder", May: "off", Jun: "off", Jul: "off", Aug: "off", Sep: "shoulder", Oct: "shoulder", Nov: "peak", Dec: "peak" };
+const SEASON_COLOR = { peak: T.gold, shoulder: T.tan, off: T.textLo };
+const SEASON_LABEL = { peak: "Peak · Nov–Mar", shoulder: "Shoulder · Apr, Sep (+ Oct*)", off: "Off-Peak · May–Aug" };
+
+// Rough per-market shape for the mock — lead volume scale and typical sales-cycle length
+const MARKET_PROFILE = {
+  asia: { leadFactor: 0.9, closeDaysBase: 34 },
+  australasia: { leadFactor: 0.55, closeDaysBase: 30 },
+  middleEast: { leadFactor: 0.7, closeDaysBase: 40 },
+  uk: { leadFactor: 1.6, closeDaysBase: 18 },
+  eu: { leadFactor: 1.3, closeDaysBase: 20 },
+  usa: { leadFactor: 1.9, closeDaysBase: 24 },
+  southAmerica: { leadFactor: 0.45, closeDaysBase: 32 },
+};
+const CHANNEL_NAMES = ["Meta", "Google Search", "Organic / SEO", "DV360", "YouTube", "Referral", "Pinterest", "Bing"];
+const CHANNEL_WEIGHTS = [0.30, 0.34, 0.12, 0.08, 0.05, 0.06, 0.03, 0.02];
+
+function buildMarket(marketKey, idx) {
+  const profile = MARKET_PROFILE[marketKey];
+  const rng = mulberry32(5000 + idx * 733);
+
+  const channelMix = CHANNEL_NAMES.map((name, ci) => {
+    const w = CHANNEL_WEIGHTS[ci] * (0.7 + rng() * 0.6);
+    const leads = Math.max(3, Math.round(190 * profile.leadFactor * w));
+    const bookRate = 0.08 + rng() * 0.14;
+    const bookings = Math.max(0, Math.round(leads * bookRate));
+    const avgVal = 32000 + rng() * 45000;
+    const revenue = Math.round(bookings * avgVal);
+    const spend = name === "Organic / SEO" || name === "Referral" ? 0 : Math.round(revenue / (3.5 + rng() * 9));
+    return { name, spend, leads, bookings, revenue };
+  });
+
+  const totalLeads = channelMix.reduce((a, c) => a + c.leads, 0);
+  const totalBookings = channelMix.reduce((a, c) => a + c.bookings, 0);
+  const totalRevenue = channelMix.reduce((a, c) => a + c.revenue, 0);
+  const totalSpend = channelMix.reduce((a, c) => a + c.spend, 0);
+
+  // open pipeline snapshot — current count sitting in each stage right now
+  const newLead = Math.round(totalLeads * (0.10 + rng() * 0.06));
+  const contacted = Math.round(totalLeads * (0.14 + rng() * 0.06));
+  const quoteSent = Math.round(totalLeads * (0.10 + rng() * 0.05));
+  const negotiating = Math.round(totalLeads * (0.06 + rng() * 0.04));
+  const closedLost = Math.round(totalLeads * (0.08 + rng() * 0.05));
+  const openLeads = newLead + contacted + quoteSent + negotiating;
+
+  // individual trip records — consultant-entered detail (trip type, nights, stops, pax, travel month)
+  const tripCount = Math.min(totalBookings, 60);
+  const trips = [];
+  for (let i = 0; i < tripCount; i++) {
+    const tr = mulberry32(5000 + idx * 733 + 900 + i * 17);
+    const tripType = TRIP_TYPES[Math.floor(tr() * TRIP_TYPES.length)];
+    const nights = 5 + Math.floor(tr() * 10);
+    const stops = 1 + Math.floor(tr() * 4);
+    const pax = 1 + Math.floor(tr() * 5);
+    const seasonRoll = tr();
+    const month = seasonRoll < 0.5
+      ? ["Nov", "Dec", "Jan", "Feb", "Mar"][Math.floor(tr() * 5)]
+      : seasonRoll < 0.75
+      ? ["Apr", "Sep", "Oct"][Math.floor(tr() * 3)]
+      : ["May", "Jun", "Jul", "Aug"][Math.floor(tr() * 4)];
+    const daysToClose = Math.max(5, Math.round(profile.closeDaysBase * (0.6 + tr() * 0.9)));
+    const consultantId = Math.floor(tr() * activityConsultants.length);
+    const revenue = Math.round((30000 + tr() * 55000) * pax);
+    trips.push({ tripType, nights, stops, pax, month, daysToClose, consultantId, revenue });
+  }
+
+  const sumPax = trips.reduce((a, t) => a + t.pax, 0);
+  const sumNights = trips.reduce((a, t) => a + t.nights, 0);
+  const sumStops = trips.reduce((a, t) => a + t.stops, 0);
+  const sumDays = trips.reduce((a, t) => a + t.daysToClose, 0);
+  const tripRevenue = trips.reduce((a, t) => a + t.revenue, 0);
+  const seasonCounts = { peak: 0, shoulder: 0, off: 0 };
+  const monthCounts = MONTHS.reduce((o, m) => ((o[m] = 0), o), {});
+  trips.forEach((t) => { seasonCounts[SEASON_BAND[t.month]]++; monthCounts[t.month]++; });
+
+  return {
+    key: marketKey, channelMix, totalLeads, totalBookings, totalRevenue, totalSpend,
+    newLead, contacted, quoteSent, negotiating, closedLost, openLeads, trips,
+    avgPax: trips.length ? sumPax / trips.length : 0,
+    avgNights: trips.length ? sumNights / trips.length : 0,
+    avgStops: trips.length ? sumStops / trips.length : 0,
+    avgDaysToClose: trips.length ? sumDays / trips.length : 0,
+    avgValuePerTraveller: sumPax ? tripRevenue / sumPax : 0,
+    seasonCounts, monthCounts,
+  };
+}
+
+const marketData = {};
+MARKETS.forEach((m, idx) => { marketData[m.key] = buildMarket(m.key, idx); });
+
+function aggregateAllMarkets() {
+  const channelMap = {};
+  let totalLeads = 0, totalBookings = 0, totalRevenue = 0, totalSpend = 0;
+  let newLead = 0, contacted = 0, quoteSent = 0, negotiating = 0, closedLost = 0;
+  let trips = [];
+  MARKETS.forEach((m) => {
+    const d = marketData[m.key];
+    d.channelMix.forEach((c) => {
+      channelMap[c.name] = channelMap[c.name] || { name: c.name, spend: 0, leads: 0, bookings: 0, revenue: 0 };
+      channelMap[c.name].spend += c.spend;
+      channelMap[c.name].leads += c.leads;
+      channelMap[c.name].bookings += c.bookings;
+      channelMap[c.name].revenue += c.revenue;
+    });
+    totalLeads += d.totalLeads; totalBookings += d.totalBookings; totalRevenue += d.totalRevenue; totalSpend += d.totalSpend;
+    newLead += d.newLead; contacted += d.contacted; quoteSent += d.quoteSent; negotiating += d.negotiating; closedLost += d.closedLost;
+    trips = trips.concat(d.trips);
+  });
+  const openLeads = newLead + contacted + quoteSent + negotiating;
+  const sumPax = trips.reduce((a, t) => a + t.pax, 0);
+  const sumNights = trips.reduce((a, t) => a + t.nights, 0);
+  const sumStops = trips.reduce((a, t) => a + t.stops, 0);
+  const sumDays = trips.reduce((a, t) => a + t.daysToClose, 0);
+  const tripRevenue = trips.reduce((a, t) => a + t.revenue, 0);
+  const seasonCounts = { peak: 0, shoulder: 0, off: 0 };
+  const monthCounts = MONTHS.reduce((o, m) => ((o[m] = 0), o), {});
+  trips.forEach((t) => { seasonCounts[SEASON_BAND[t.month]]++; monthCounts[t.month]++; });
+  return {
+    key: "all", channelMix: Object.values(channelMap), totalLeads, totalBookings, totalRevenue, totalSpend,
+    newLead, contacted, quoteSent, negotiating, closedLost, openLeads, trips,
+    avgPax: trips.length ? sumPax / trips.length : 0,
+    avgNights: trips.length ? sumNights / trips.length : 0,
+    avgStops: trips.length ? sumStops / trips.length : 0,
+    avgDaysToClose: trips.length ? sumDays / trips.length : 0,
+    avgValuePerTraveller: sumPax ? tripRevenue / sumPax : 0,
+    seasonCounts, monthCounts,
+  };
+}
+const allMarketsData = aggregateAllMarkets();
+
+function topConsultantsForMarket(market) {
+  const map = {};
+  market.trips.forEach((t) => {
+    map[t.consultantId] = map[t.consultantId] || { bookings: 0, revenue: 0, pax: 0 };
+    map[t.consultantId].bookings += 1;
+    map[t.consultantId].revenue += t.revenue;
+    map[t.consultantId].pax += t.pax;
+  });
+  return Object.entries(map)
+    .map(([id, v]) => ({ name: activityConsultants[+id].name, ...v }))
+    .sort((a, b) => b.revenue - a.revenue)
+    .slice(0, 5);
+}
+
+function tripTypeBreakdown(market) {
+  const map = {};
+  market.trips.forEach((t) => {
+    map[t.tripType] = (map[t.tripType] || 0) + 1;
+  });
+  return Object.entries(map).map(([type, count]) => ({ type, count })).sort((a, b) => b.count - a.count);
+}
 
 // ---------- small UI atoms ----------
 function UtmChip({ platform, campaign, adgroup, ad }) {
@@ -339,20 +508,21 @@ function ChannelsTab() {
 function ConsultantsTab() {
   const sorted = [...consultants].sort((a, b) => b.revenue - a.revenue);
   const maxRev = sorted[0].revenue;
+  const openLeadsFor = (c) => Math.round(c.leads * 0.13) + (c.name.length % 4); // open = still active in pipeline, not yet closed won/lost
   return (
     <div>
       <SectionLabel sub="Stage conversion and revenue, split by lead source — separates a consultant problem from a lead-quality problem">Consultant Performance</SectionLabel>
       <div style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, overflow: "hidden" }}>
         <div style={{
-          display: "grid", gridTemplateColumns: "1.6fr 0.7fr 0.7fr 1fr 1.2fr 1fr",
+          display: "grid", gridTemplateColumns: "1.5fr 0.6fr 0.7fr 0.7fr 1fr 1.1fr 1fr",
           padding: "10px 18px", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em",
           color: T.textLo, borderBottom: `1px solid ${T.line}`, fontFamily: "Inter",
         }}>
-          <span>Consultant</span><span>Leads</span><span>Bookings</span><span>Conv. Rate</span><span>Revenue</span><span>Top Source</span>
+          <span>Consultant</span><span>Leads</span><span>Open</span><span>Bookings</span><span>Conv. Rate</span><span>Revenue</span><span>Top Source</span>
         </div>
         {sorted.map((c, i) => (
           <div key={c.name} style={{
-            display: "grid", gridTemplateColumns: "1.6fr 0.7fr 0.7fr 1fr 1.2fr 1fr",
+            display: "grid", gridTemplateColumns: "1.5fr 0.6fr 0.7fr 0.7fr 1fr 1.1fr 1fr",
             padding: "13px 18px", fontSize: 13, fontFamily: "Inter", color: T.textHi,
             alignItems: "center", borderBottom: i < sorted.length - 1 ? `1px solid ${T.line}` : "none",
           }}>
@@ -361,6 +531,7 @@ function ConsultantsTab() {
               {c.name}
             </span>
             <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12 }}>{c.leads}</span>
+            <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.gold }}>{openLeadsFor(c)}</span>
             <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12 }}>{c.bookings}</span>
             <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <div style={{ width: 50, height: 5, background: T.bgRaised, borderRadius: 3, overflow: "hidden" }}>
@@ -424,13 +595,13 @@ function AudienceTab() {
           <div key={c.ad} style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr 0.8fr 0.8fr 1fr", padding: "12px 4px", alignItems: "center", borderBottom: i < arr.length - 1 ? `1px solid ${T.line}` : "none" }}>
             <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{c.ad}</span>
             <span style={{ fontFamily: "Inter", fontSize: 12.5, color: T.textMid }}>{c.platform}</span>
-            <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12 }}>{c.leads}</span>
-            <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12 }}>{c.bookings}</span>
+            <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{c.leads}</span>
+            <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{c.bookings}</span>
             <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <div style={{ width: 60, height: 5, background: T.bgRaised, borderRadius: 3, overflow: "hidden" }}>
                 <div style={{ width: `${c.bookRate * 5}%`, height: "100%", background: c.bookRate >= 12 ? T.sage : T.rust }} />
               </div>
-              <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12 }}>{c.bookRate}%</span>
+              <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{c.bookRate}%</span>
             </span>
           </div>
         ))}
@@ -643,6 +814,200 @@ function ActivityTab() {
   );
 }
 
+function PipelineFunnel({ market }) {
+  const stages = [
+    { label: "New Lead", count: market.newLead },
+    { label: "Contacted", count: market.contacted },
+    { label: "Quote Sent", count: market.quoteSent },
+    { label: "Negotiating", count: market.negotiating },
+    { label: "Closed Won", count: market.totalBookings },
+  ];
+  const max = Math.max(...stages.map((s) => s.count), 1);
+  return (
+    <div>
+      {stages.map((s, i) => (
+        <div key={s.label} style={{ marginBottom: 10 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4, fontFamily: "Inter" }}>
+            <span style={{ color: T.textHi }}>{s.label}</span>
+            <span style={{ fontFamily: "IBM Plex Mono", color: T.textMid }}>{s.count.toLocaleString()}</span>
+          </div>
+          <div style={{ height: 8, background: T.bgRaised, borderRadius: 3, overflow: "hidden" }}>
+            <div style={{
+              width: `${(s.count / max) * 100}%`, height: "100%", borderRadius: 3,
+              background: i === stages.length - 1 ? T.sage : T.gold,
+            }} />
+          </div>
+        </div>
+      ))}
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, fontFamily: "Inter", color: T.rust, marginTop: 10, paddingTop: 10, borderTop: `1px solid ${T.line}` }}>
+        <span>Closed Lost (this period)</span>
+        <span style={{ fontFamily: "IBM Plex Mono" }}>{market.closedLost.toLocaleString()}</span>
+      </div>
+    </div>
+  );
+}
+
+function SeasonalityChart({ market }) {
+  const data = MONTHS.map((m) => ({ month: m, count: market.monthCounts[m] || 0 }));
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 14, fontSize: 11, fontFamily: "Inter", color: T.textMid, marginBottom: 10, flexWrap: "wrap" }}>
+        {["peak", "shoulder", "off"].map((s) => (
+          <span key={s} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+            <span style={{ width: 8, height: 8, borderRadius: 2, background: SEASON_COLOR[s] }} />
+            {SEASON_LABEL[s]}
+          </span>
+        ))}
+      </div>
+      <ResponsiveContainer width="100%" height={170}>
+        <BarChart data={data} margin={{ left: -20, right: 10 }}>
+          <CartesianGrid stroke={T.line} vertical={false} />
+          <XAxis dataKey="month" stroke={T.textLo} fontSize={10.5} tickLine={false} axisLine={{ stroke: T.line }} fontFamily="Inter" />
+          <YAxis stroke={T.textLo} fontSize={10.5} tickLine={false} axisLine={false} fontFamily="Inter" />
+          <Tooltip contentStyle={{ background: T.bgRaised, border: `1px solid ${T.line}`, borderRadius: 4, fontFamily: "Inter", fontSize: 12 }} labelStyle={{ color: T.textHi }} />
+          <Bar dataKey="count" name="Trips" radius={[3, 3, 0, 0]}>
+            {data.map((d, i) => <Cell key={i} fill={SEASON_COLOR[SEASON_BAND[d.month]]} />)}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+      <div style={{ fontSize: 10.5, color: T.textLo, fontFamily: "Inter", marginTop: 8, fontStyle: "italic" }}>
+        * October wasn't specified in the brief (Peak Nov–Mar, Off-Peak May–Aug, Shoulder Apr &amp; Sep) — shown here as Shoulder. Flag if it should sit elsewhere.
+      </div>
+    </div>
+  );
+}
+
+function MarketsTab() {
+  const [selected, setSelected] = useState("all");
+  const market = selected === "all" ? allMarketsData : marketData[selected];
+  const label = selected === "all" ? "All Markets" : MARKETS.find((m) => m.key === selected).label;
+  const cac = market.totalBookings ? market.totalSpend / market.totalBookings : 0;
+  const roas = market.totalSpend ? market.totalRevenue / market.totalSpend : null;
+  const avgDeal = market.totalBookings ? market.totalRevenue / market.totalBookings : 0;
+  const topConsultants = topConsultantsForMarket(market);
+  const tripTypes = tripTypeBreakdown(market);
+  const maxTripType = Math.max(...tripTypes.map((t) => t.count), 1);
+
+  return (
+    <div>
+      <SectionLabel sub="Everything already in the dashboard, sliced by market — plus pipeline, trip detail, and seasonality">Markets</SectionLabel>
+
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 22 }}>
+        {[{ key: "all", label: "All Markets" }, ...MARKETS].map((m) => (
+          <button
+            key={m.key}
+            onClick={() => setSelected(m.key)}
+            style={{
+              background: selected === m.key ? T.bgRaised : "transparent",
+              border: `1px solid ${selected === m.key ? T.gold : T.line}`,
+              color: selected === m.key ? T.textHi : T.textMid,
+              borderRadius: 4, padding: "6px 13px", fontFamily: "Inter", fontSize: 12.5, cursor: "pointer",
+              display: "flex", alignItems: "center", gap: 5,
+            }}
+          >
+            {m.key === "all" && <Globe size={12} />} {m.label}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 28 }}>
+        <KpiCard label="Leads" value={market.totalLeads.toLocaleString()} icon={Users} />
+        <KpiCard label="Open Leads" value={market.openLeads.toLocaleString()} icon={Radio} />
+        <KpiCard label="Bookings" value={market.totalBookings.toLocaleString()} icon={CheckCircle2} />
+        <KpiCard label="Revenue" value={fmt(market.totalRevenue)} icon={DollarSign} />
+        <KpiCard label="Blended CAC" value={fmt(cac)} icon={Target} />
+        <KpiCard label="Blended ROAS" value={roas ? `${roas.toFixed(1)}x` : "—"} icon={TrendingUp} />
+        <KpiCard label="Avg Deal Value" value={fmt(avgDeal)} icon={DollarSign} />
+        <KpiCard label="Avg Value / Traveller" value={fmt(market.avgValuePerTraveller)} icon={Users} />
+        <KpiCard label="Avg Days to Close" value={`${market.avgDaysToClose.toFixed(0)}d`} icon={Timer} />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 20, marginBottom: 28 }}>
+        <div style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, padding: 22 }}>
+          <SectionLabel sub={`${label} · spend, leads, bookings by channel`}>Channel Mix</SectionLabel>
+          <div style={{ display: "grid", gridTemplateColumns: "1.3fr 0.9fr 0.7fr 0.7fr 0.8fr", padding: "8px 4px", fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.04em", color: T.textLo, borderBottom: `1px solid ${T.line}`, fontFamily: "Inter" }}>
+            <span>Channel</span><span>Spend</span><span>Leads</span><span>Bookings</span><span>ROAS</span>
+          </div>
+          {market.channelMix.map((c, i, arr) => {
+            const cRoas = c.spend ? c.revenue / c.spend : null;
+            return (
+              <div key={c.name} style={{ display: "grid", gridTemplateColumns: "1.3fr 0.9fr 0.7fr 0.7fr 0.8fr", padding: "10px 4px", alignItems: "center", borderBottom: i < arr.length - 1 ? `1px solid ${T.line}` : "none" }}>
+                <span style={{ fontFamily: "Inter", fontSize: 12.5, color: T.textHi }}>{c.name}</span>
+                <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{c.spend ? fmt(c.spend) : "—"}</span>
+                <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{c.leads}</span>
+                <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{c.bookings}</span>
+                <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: cRoas && cRoas >= 8 ? T.sage : T.textMid }}>{cRoas ? `${cRoas.toFixed(1)}x` : "—"}</span>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, padding: 22 }}>
+          <SectionLabel sub={`${label} · lead comes in → assigned → worked → closed`}>Pipeline Snapshot</SectionLabel>
+          <PipelineFunnel market={market} />
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 20, marginBottom: 28 }}>
+        <div style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, padding: 22 }}>
+          <SectionLabel sub={`${label} · travel month distribution, from consultant-entered trip dates`}>Seasonality</SectionLabel>
+          <SeasonalityChart market={market} />
+        </div>
+
+        <div style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, padding: 22 }}>
+          <SectionLabel sub={`${label} · from consultant-entered trip type, nights, stops, PAX`}>Trip Profile</SectionLabel>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+            <div>
+              <div style={{ fontFamily: "Fraunces", fontSize: 20, color: T.textHi }}>{market.avgNights.toFixed(1)}</div>
+              <div style={{ fontSize: 10.5, color: T.textLo, fontFamily: "Inter", textTransform: "uppercase", letterSpacing: "0.04em" }}>Avg Nights</div>
+            </div>
+            <div>
+              <div style={{ fontFamily: "Fraunces", fontSize: 20, color: T.textHi }}>{market.avgStops.toFixed(1)}</div>
+              <div style={{ fontSize: 10.5, color: T.textLo, fontFamily: "Inter", textTransform: "uppercase", letterSpacing: "0.04em" }}>Avg Stops</div>
+            </div>
+            <div>
+              <div style={{ fontFamily: "Fraunces", fontSize: 20, color: T.textHi }}>{market.avgPax.toFixed(1)}</div>
+              <div style={{ fontSize: 10.5, color: T.textLo, fontFamily: "Inter", textTransform: "uppercase", letterSpacing: "0.04em" }}>Avg PAX</div>
+            </div>
+            <div>
+              <div style={{ fontFamily: "Fraunces", fontSize: 20, color: T.textHi }}>{market.trips.length}</div>
+              <div style={{ fontSize: 10.5, color: T.textLo, fontFamily: "Inter", textTransform: "uppercase", letterSpacing: "0.04em" }}>Trips Logged</div>
+            </div>
+          </div>
+          <div style={{ fontSize: 10.5, color: T.textLo, fontFamily: "Inter", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 }}>Trip Type Mix</div>
+          {tripTypes.map((t) => (
+            <div key={t.type} style={{ marginBottom: 7 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, fontFamily: "Inter", color: T.textMid, marginBottom: 3 }}>
+                <span>{t.type}</span><span style={{ fontFamily: "IBM Plex Mono" }}>{t.count}</span>
+              </div>
+              <div style={{ height: 5, background: T.bgRaised, borderRadius: 3, overflow: "hidden" }}>
+                <div style={{ width: `${(t.count / maxTripType) * 100}%`, height: "100%", background: T.goldDim }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, padding: 22 }}>
+        <SectionLabel sub={`${label} · ranked by revenue closed in this market`}>Top Consultants</SectionLabel>
+        <div style={{ display: "grid", gridTemplateColumns: "1.6fr 0.8fr 1fr 0.8fr", padding: "8px 4px", fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.04em", color: T.textLo, borderBottom: `1px solid ${T.line}`, fontFamily: "Inter" }}>
+          <span>Consultant</span><span>Bookings</span><span>Revenue</span><span>Total PAX</span>
+        </div>
+        {topConsultants.length === 0 ? (
+          <div style={{ padding: "16px 4px", fontSize: 12.5, color: T.textLo, fontFamily: "Inter" }}>No closed bookings logged for this market yet.</div>
+        ) : topConsultants.map((c, i, arr) => (
+          <div key={c.name} style={{ display: "grid", gridTemplateColumns: "1.6fr 0.8fr 1fr 0.8fr", padding: "10px 4px", alignItems: "center", borderBottom: i < arr.length - 1 ? `1px solid ${T.line}` : "none" }}>
+            <span style={{ fontFamily: "Inter", fontSize: 12.5, color: T.textHi }}>{c.name}</span>
+            <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{c.bookings}</span>
+            <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{fmt(c.revenue)}</span>
+            <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{c.pax}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ---------- app ----------
 export default function App() {
   const [tab, setTab] = useState("overview");
@@ -651,6 +1016,7 @@ export default function App() {
     { id: "channels", label: "Channels & Attribution" },
     { id: "consultants", label: "Consultants" },
     { id: "activity", label: "Activity & Targets" },
+    { id: "markets", label: "Markets" },
     { id: "audience", label: "Audience & Retargeting" },
     { id: "decisions", label: "Decisions & Budget" },
   ];
@@ -703,6 +1069,7 @@ export default function App() {
         {tab === "channels" && <ChannelsTab />}
         {tab === "consultants" && <ConsultantsTab />}
         {tab === "activity" && <ActivityTab />}
+        {tab === "markets" && <MarketsTab />}
         {tab === "audience" && <AudienceTab />}
         {tab === "decisions" && <DecisionsTab />}
 

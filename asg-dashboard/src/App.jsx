@@ -7,23 +7,23 @@ import {
   Compass, TrendingUp, TrendingDown, Users, Target, DollarSign,
   ChevronDown, ChevronRight, ArrowUpRight, Radio, Sparkles, RefreshCw,
   CheckCircle2, Circle, Clock, ExternalLink, Gauge, Globe, CalendarDays,
-  Timer, MapPin,
+  Timer, MapPin, Repeat, PhoneCall, AlertTriangle, Search, XCircle,
 } from "lucide-react";
 
 // ---------- design tokens ----------
 const T = {
-  bg: "#15120D",
-  bgRaised: "#1D1912",
-  bgCard: "#211C15",
-  line: "#332C20",
-  gold: "#C9A24B",
-  goldDim: "#8A7440",
-  tan: "#E4D4AE",
-  rust: "#B5601F",
-  sage: "#7C9070",
-  textHi: "#F3ECDD",
-  textMid: "#B9AC90",
-  textLo: "#7C7360",
+  bg: "#FBFAF7",
+  bgRaised: "#F1EEE6",
+  bgCard: "#FFFFFF",
+  line: "#E4E0D3",
+  gold: "#A9812E",
+  goldDim: "#B08D42",
+  tan: "#EDE1C3",
+  rust: "#B5451F",
+  sage: "#5F7A56",
+  textHi: "#1C1810",
+  textMid: "#5B5344",
+  textLo: "#8B8271",
 };
 
 const fontImport = `
@@ -75,13 +75,6 @@ const creatives = [
   { ad: "Display_SkylineFade", platform: "DV360", leads: 84, bookings: 6, bookRate: 7.1 },
 ];
 
-const decisions = [
-  { title: "Digital Performance Lead hire spec", status: "done" },
-  { title: "Horizon 1 budget envelope — Meta test spend, nurture tooling", status: "done" },
-  { title: "Referral programme incentive mechanics", status: "progress" },
-  { title: "First tranche of domains — authority-site buildout", status: "pending" },
-];
-
 const fmt = (n) => n >= 1000000 ? `R${(n / 1000000).toFixed(2)}M` : n >= 1000 ? `R${(n / 1000).toFixed(0)}K` : `R${n}`;
 const pct = (n) => `${n}%`;
 
@@ -95,6 +88,7 @@ const METRICS = [
   { key: "quoteValue", label: "Quote Value", short: "Quote R", daily: 25000, currency: true },
   { key: "dealsClosed", label: "Deals Closed", short: "Deals", daily: 1, currency: false },
   { key: "dealsValue", label: "Deals Value", short: "Deals R", daily: 50000, currency: true },
+  { key: "followUps", label: "Follow-Ups", short: "Follow-Ups", daily: 3, currency: false },
 ];
 
 const PERIOD_MULT = { day: 1, week: 5, month: 22 }; // 5-day week, ~22 working days/month
@@ -321,6 +315,122 @@ function tripTypeBreakdown(market) {
   return Object.entries(map).map(([type, count]) => ({ type, count })).sort((a, b) => b.count - a.count);
 }
 
+// ---------- consultant deep-dive: pipeline, repeat rate, unconverted leads, low-quality leads ----------
+const LOW_QUALITY_REASONS = ["Unqualified budget", "Wrong market fit", "Spam / bot enquiry", "Duplicate lead", "Non-responsive after 3 attempts", "Outside service area", "Price-shopping only"];
+
+// Repeat-customer traffic light: benchmark is a 20–30% band. Read as: 20%+ meets the benchmark
+// floor (green), 12–20% is approaching it (amber), below 12% is well off (red). This threshold
+// choice is an assumption worth confirming — the brief gave a target band, not red/amber cutoffs.
+function repeatStatus(rate) {
+  if (rate >= 20) return "green";
+  if (rate >= 12) return "amber";
+  return "red";
+}
+// Unconverted-consultation traffic light: the higher the share of unconverted leads that already
+// got a quote/consultation before stalling, the worse — leads are being worked but not closed.
+// No benchmark was specified for this one either — thresholds below are a starting assumption.
+function unconvertedStatus(ratio) {
+  if (ratio >= 0.45) return "red";
+  if (ratio >= 0.28) return "amber";
+  return "green";
+}
+
+function buildConsultantExtras(id) {
+  const rng = mulberry32(9000 + id * 271);
+
+  // pipeline snapshot — this consultant's own portfolio, same 6-stage shape as Markets
+  const totalPortfolio = 12 + Math.floor(rng() * 30);
+  const newLead = Math.round(totalPortfolio * (0.12 + rng() * 0.08));
+  const contacted = Math.round(totalPortfolio * (0.16 + rng() * 0.08));
+  const quoteSent = Math.round(totalPortfolio * (0.12 + rng() * 0.06));
+  const negotiating = Math.round(totalPortfolio * (0.08 + rng() * 0.05));
+  const closedWon = Math.round(totalPortfolio * (0.15 + rng() * 0.1));
+  const closedLost = Math.max(0, totalPortfolio - newLead - contacted - quoteSent - negotiating - closedWon);
+
+  // repeat customer share of closed-won bookings
+  const repeatShare = 0.05 + rng() * 0.35;
+  const repeat = Math.round(closedWon * repeatShare);
+
+  // unconverted leads by period — total still-open-or-lost, and the subset that had a
+  // consultation (quote sent / negotiating) before stalling
+  const unconverted = {};
+  ["day", "week", "month"].forEach((period) => {
+    const scale = period === "day" ? 1 : period === "week" ? 5 : 22;
+    const totalU = Math.max(0, Math.round(totalPortfolio * 0.06 * scale * (0.5 + rng() * 0.9)));
+    const consultShare = 0.15 + rng() * 0.45;
+    unconverted[period] = { total: totalU, consultations: Math.round(totalU * consultShare) };
+  });
+
+  // low-quality leads this consultant has flagged, with reason / campaign / market
+  const lqCount = Math.floor(rng() * 7);
+  const lowQuality = Array.from({ length: lqCount }, () => ({
+    reason: LOW_QUALITY_REASONS[Math.floor(rng() * LOW_QUALITY_REASONS.length)],
+    campaign: channels[Math.floor(rng() * channels.length)].campaign,
+    market: MARKETS[Math.floor(rng() * MARKETS.length)].label,
+  }));
+
+  return {
+    pipeline: { newLead, contacted, quoteSent, negotiating, closedWon, closedLost },
+    repeat: { closedWon, repeat },
+    unconverted,
+    lowQuality,
+  };
+}
+
+const consultantExtras = activityConsultants.map((c) => buildConsultantExtras(c.id));
+
+function pipelineSum(ids) {
+  return ids.reduce((acc, id) => {
+    const p = consultantExtras[id].pipeline;
+    acc.newLead += p.newLead; acc.contacted += p.contacted; acc.quoteSent += p.quoteSent;
+    acc.negotiating += p.negotiating; acc.closedWon += p.closedWon; acc.closedLost += p.closedLost;
+    return acc;
+  }, { newLead: 0, contacted: 0, quoteSent: 0, negotiating: 0, closedWon: 0, closedLost: 0 });
+}
+function repeatSum(ids) {
+  return ids.reduce((acc, id) => {
+    acc.closedWon += consultantExtras[id].repeat.closedWon;
+    acc.repeat += consultantExtras[id].repeat.repeat;
+    return acc;
+  }, { closedWon: 0, repeat: 0 });
+}
+function unconvertedSum(ids, period) {
+  return ids.reduce((acc, id) => {
+    const u = consultantExtras[id].unconverted[period];
+    acc.total += u.total; acc.consultations += u.consultations;
+    return acc;
+  }, { total: 0, consultations: 0 });
+}
+
+// ---------- AI / GEO visibility: mock pull from GA4 + Search Console ----------
+const AI_ENGINES = [
+  { name: "Google AI Overviews", source: "Search Console", sessions: 1240, delta: 34 },
+  { name: "ChatGPT", source: "GA4 referral", sessions: 410, delta: 61 },
+  { name: "Perplexity", source: "GA4 referral", sessions: 185, delta: 88 },
+  { name: "Copilot", source: "GA4 referral", sessions: 96, delta: 42 },
+  { name: "Gemini", source: "GA4 referral", sessions: 74, delta: 29 },
+];
+const AI_KEYWORDS = [
+  { query: "best time to see the great migration", impressions: 8400, clicks: 310, avgPosition: 2.1 },
+  { query: "luxury safari lodges south africa", impressions: 6100, clicks: 265, avgPosition: 1.8 },
+  { query: "kruger vs sabi sands safari", impressions: 4200, clicks: 190, avgPosition: 2.6 },
+  { query: "how much does a private safari cost", impressions: 3900, clicks: 172, avgPosition: 3.1 },
+  { query: "gorilla trekking rwanda vs uganda", impressions: 2650, clicks: 118, avgPosition: 2.4 },
+  { query: "family safari itinerary 10 days", impressions: 2200, clicks: 94, avgPosition: 3.4 },
+  { query: "honeymoon safari and beach combo", impressions: 1950, clicks: 88, avgPosition: 2.9 },
+  { query: "best safari lodges for photography", impressions: 1600, clicks: 61, avgPosition: 4.0 },
+];
+const AI_LOCATIONS = [
+  { location: "London, UK", sessions: 320, topEngine: "Google AI Overviews" },
+  { location: "New York, USA", sessions: 285, topEngine: "ChatGPT" },
+  { location: "Dubai, UAE", sessions: 210, topEngine: "Google AI Overviews" },
+  { location: "Sydney, Australia", sessions: 165, topEngine: "Perplexity" },
+  { location: "Singapore", sessions: 140, topEngine: "ChatGPT" },
+  { location: "Toronto, Canada", sessions: 118, topEngine: "Google AI Overviews" },
+  { location: "Cape Town, South Africa", sessions: 96, topEngine: "Copilot" },
+  { location: "Mumbai, India", sessions: 74, topEngine: "Gemini" },
+];
+
 // ---------- small UI atoms ----------
 function UtmChip({ platform, campaign, adgroup, ad }) {
   return (
@@ -501,17 +611,99 @@ function ChannelsTab() {
           </BarChart>
         </ResponsiveContainer>
       </div>
+
+      <div style={{ marginTop: 26 }}>
+        <SectionLabel sub="Pulled from GA4 (AI referral sessions) and Search Console (AI Overview impressions/clicks)">AI / GEO Visibility</SectionLabel>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 20 }}>
+          {AI_ENGINES.map((e) => (
+            <div key={e.name} style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, padding: "14px 16px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                <span style={{ color: T.textLo, fontSize: 10, letterSpacing: "0.05em", textTransform: "uppercase", fontFamily: "Inter" }}>{e.name}</span>
+                <Search size={13} color={T.goldDim} />
+              </div>
+              <div style={{ fontFamily: "Fraunces", fontSize: 20, color: T.textHi }}>{e.sessions.toLocaleString()}</div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, fontFamily: "Inter", color: T.textLo, marginTop: 4 }}>
+                <span>{e.source}</span>
+                <span style={{ color: T.sage }}>+{e.delta}%</span>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 20 }}>
+          <div style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, padding: 22 }}>
+            <SectionLabel sub="Search Console · queries surfacing ASG in AI Overviews">Top Keywords</SectionLabel>
+            <div style={{ display: "grid", gridTemplateColumns: "1.8fr 0.8fr 0.7fr 0.8fr", padding: "8px 4px", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.04em", color: T.textLo, borderBottom: `1px solid ${T.line}`, fontFamily: "Inter" }}>
+              <span>Query</span><span>Impr.</span><span>Clicks</span><span>Avg Pos.</span>
+            </div>
+            {AI_KEYWORDS.map((k, i, arr) => (
+              <div key={k.query} style={{ display: "grid", gridTemplateColumns: "1.8fr 0.8fr 0.7fr 0.8fr", padding: "9px 4px", alignItems: "center", borderBottom: i < arr.length - 1 ? `1px solid ${T.line}` : "none" }}>
+                <span style={{ fontFamily: "Inter", fontSize: 12, color: T.textHi }}>{k.query}</span>
+                <span style={{ fontFamily: "IBM Plex Mono", fontSize: 11.5, color: T.textHi }}>{k.impressions.toLocaleString()}</span>
+                <span style={{ fontFamily: "IBM Plex Mono", fontSize: 11.5, color: T.textHi }}>{k.clicks}</span>
+                <span style={{ fontFamily: "IBM Plex Mono", fontSize: 11.5, color: T.textHi }}>{k.avgPosition}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, padding: 22 }}>
+            <SectionLabel sub="GA4 geography · where AI-referred sessions are coming from">Top Locations</SectionLabel>
+            <div style={{ display: "grid", gridTemplateColumns: "1.4fr 0.7fr 1.2fr", padding: "8px 4px", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.04em", color: T.textLo, borderBottom: `1px solid ${T.line}`, fontFamily: "Inter" }}>
+              <span>Location</span><span>Sessions</span><span>Top Engine</span>
+            </div>
+            {AI_LOCATIONS.map((l, i, arr) => (
+              <div key={l.location} style={{ display: "grid", gridTemplateColumns: "1.4fr 0.7fr 1.2fr", padding: "9px 4px", alignItems: "center", borderBottom: i < arr.length - 1 ? `1px solid ${T.line}` : "none" }}>
+                <span style={{ fontFamily: "Inter", fontSize: 12, color: T.textHi, display: "flex", alignItems: "center", gap: 5 }}><MapPin size={11} color={T.textLo} />{l.location}</span>
+                <span style={{ fontFamily: "IBM Plex Mono", fontSize: 11.5, color: T.textHi }}>{l.sessions}</span>
+                <span style={{ fontFamily: "Inter", fontSize: 11.5, color: T.textMid }}>{l.topEngine}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
 
-function ConsultantsTab() {
+function StatusCard({ label, value, sub, status }) {
+  return (
+    <div style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, padding: "16px 18px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+        <span style={{ color: T.textLo, fontSize: 10.5, letterSpacing: "0.06em", textTransform: "uppercase", fontFamily: "Inter" }}>{label}</span>
+        {status && <span style={{ width: 9, height: 9, borderRadius: "50%", background: STATUS_COLOR[status] }} />}
+      </div>
+      <div style={{ fontFamily: "Fraunces", fontSize: 22, color: T.textHi, marginBottom: 2 }}>{value}</div>
+      {sub && <div style={{ fontFamily: "Inter", fontSize: 11, color: T.textLo }}>{sub}</div>}
+    </div>
+  );
+}
+
+function RepeatRateBar({ rate, status, height = 10 }) {
+  const scaleMax = 40;
+  const pct = Math.min(100, (rate / scaleMax) * 100);
+  const bandStart = (20 / scaleMax) * 100;
+  const bandEnd = (30 / scaleMax) * 100;
+  return (
+    <div style={{ position: "relative", height, background: T.bgRaised, borderRadius: 4, overflow: "hidden" }}>
+      <div style={{ position: "absolute", left: `${bandStart}%`, width: `${bandEnd - bandStart}%`, top: 0, bottom: 0, background: T.tan, opacity: 0.7 }} title="Benchmark band 20–30%" />
+      <div style={{ position: "relative", width: `${pct}%`, height: "100%", background: STATUS_COLOR[status], borderRadius: 4 }} />
+    </div>
+  );
+}
+
+const PILL = (active) => ({
+  background: active ? T.bgRaised : "transparent",
+  border: `1px solid ${active ? T.gold : T.line}`,
+  color: active ? T.textHi : T.textMid,
+  borderRadius: 4, padding: "6px 13px", fontFamily: "Inter", fontSize: 12.5, cursor: "pointer",
+});
+
+function LeaderboardSection() {
   const sorted = [...consultants].sort((a, b) => b.revenue - a.revenue);
   const maxRev = sorted[0].revenue;
-  const openLeadsFor = (c) => Math.round(c.leads * 0.13) + (c.name.length % 4); // open = still active in pipeline, not yet closed won/lost
+  const openLeadsFor = (c) => Math.round(c.leads * 0.13) + (c.name.length % 4);
   return (
     <div>
-      <SectionLabel sub="Stage conversion and revenue, split by lead source — separates a consultant problem from a lead-quality problem">Consultant Performance</SectionLabel>
+      <SectionLabel sub="Top performers by revenue — stage conversion, split by lead source">Leaderboard</SectionLabel>
       <div style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, overflow: "hidden" }}>
         <div style={{
           display: "grid", gridTemplateColumns: "1.5fr 0.6fr 0.7fr 0.7fr 1fr 1.1fr 1fr",
@@ -530,9 +722,9 @@ function ConsultantsTab() {
               <span style={{ color: T.goldDim, fontFamily: "IBM Plex Mono", fontSize: 11, width: 16 }}>{i + 1}</span>
               {c.name}
             </span>
-            <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12 }}>{c.leads}</span>
+            <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{c.leads}</span>
             <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.gold }}>{openLeadsFor(c)}</span>
-            <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12 }}>{c.bookings}</span>
+            <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{c.bookings}</span>
             <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <div style={{ width: 50, height: 5, background: T.bgRaised, borderRadius: 3, overflow: "hidden" }}>
                 <div style={{ width: `${c.rate * 4}%`, height: "100%", background: T.gold }} />
@@ -543,12 +735,397 @@ function ConsultantsTab() {
               <div style={{ width: 70, height: 5, background: T.bgRaised, borderRadius: 3, overflow: "hidden" }}>
                 <div style={{ width: `${(c.revenue / maxRev) * 100}%`, height: "100%", background: T.sage }} />
               </div>
-              <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12 }}>{fmt(c.revenue)}</span>
+              <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{fmt(c.revenue)}</span>
             </span>
             <span style={{ fontSize: 12, color: T.textMid }}>{c.top}</span>
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function PipelineSection() {
+  const [sel, setSel] = useState("all");
+  const teamIds = sel === "all"
+    ? activityConsultants.map((c) => c.id)
+    : activityConsultants.filter((c) => MANAGER_NAMES[c.managerIndex] === sel).map((c) => c.id);
+  const agg = pipelineSum(teamIds);
+  const managerSummaries = MANAGER_NAMES.map((name, mi) => {
+    const ids = activityConsultants.filter((c) => c.managerIndex === mi).map((c) => c.id);
+    const p = pipelineSum(ids);
+    return { name, ...p, open: p.newLead + p.contacted + p.quoteSent + p.negotiating };
+  });
+  const selTeam = sel === "all" ? [] : activityConsultants.filter((c) => MANAGER_NAMES[c.managerIndex] === sel);
+
+  return (
+    <div>
+      <SectionLabel sub="Lead comes in → assigned to consultant → worked through stages → closed">Pipeline Snapshot</SectionLabel>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 22 }}>
+        {["all", ...MANAGER_NAMES].map((m) => (
+          <button key={m} onClick={() => setSel(m)} style={PILL(sel === m)}>{m === "all" ? "All Managers (Company)" : m}</button>
+        ))}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 24 }}>
+        <div style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, padding: 22 }}>
+          <SectionLabel sub={sel === "all" ? "Company-wide" : sel}>Snapshot</SectionLabel>
+          <PipelineFunnel data={agg} />
+        </div>
+        <div style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, padding: 22 }}>
+          <SectionLabel sub="6 sales managers · open pipeline vs. closed">Manager Comparison</SectionLabel>
+          <div style={{ display: "grid", gridTemplateColumns: "1.4fr 0.8fr 0.8fr 0.8fr", padding: "6px 4px", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.04em", color: T.textLo, borderBottom: `1px solid ${T.line}`, fontFamily: "Inter" }}>
+            <span>Manager</span><span>Open</span><span>Won</span><span>Lost</span>
+          </div>
+          {managerSummaries.map((m, i, arr) => (
+            <div key={m.name} onClick={() => setSel(m.name)} style={{
+              display: "grid", gridTemplateColumns: "1.4fr 0.8fr 0.8fr 0.8fr", padding: "9px 4px", alignItems: "center",
+              cursor: "pointer", background: sel === m.name ? T.bgRaised : "transparent",
+              borderBottom: i < arr.length - 1 ? `1px solid ${T.line}` : "none",
+            }}>
+              <span style={{ fontFamily: "Inter", fontSize: 12.5, color: T.textHi }}>{m.name}</span>
+              <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.gold }}>{m.open}</span>
+              <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.sage }}>{m.closedWon}</span>
+              <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.rust }}>{m.closedLost}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {sel !== "all" && (
+        <div style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, padding: 22 }}>
+          <SectionLabel sub={`${sel} · ${selTeam.length} consultants`}>Pipeline by Consultant</SectionLabel>
+          <div style={{ display: "grid", gridTemplateColumns: "1.5fr repeat(6, 0.8fr)", padding: "6px 4px", fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.04em", color: T.textLo, borderBottom: `1px solid ${T.line}`, fontFamily: "Inter" }}>
+            <span>Consultant</span><span>New</span><span>Contact</span><span>Quote</span><span>Negot.</span><span>Won</span><span>Lost</span>
+          </div>
+          {selTeam.map((c, i, arr) => {
+            const p = consultantExtras[c.id].pipeline;
+            return (
+              <div key={c.id} style={{ display: "grid", gridTemplateColumns: "1.5fr repeat(6, 0.8fr)", padding: "8px 4px", alignItems: "center", borderBottom: i < arr.length - 1 ? `1px solid ${T.line}` : "none" }}>
+                <span style={{ fontFamily: "Inter", fontSize: 12.5, color: T.textHi }}>{c.name}</span>
+                <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{p.newLead}</span>
+                <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{p.contacted}</span>
+                <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{p.quoteSent}</span>
+                <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{p.negotiating}</span>
+                <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.sage }}>{p.closedWon}</span>
+                <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.rust }}>{p.closedLost}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RepeatCustomersSection() {
+  const [openManager, setOpenManager] = useState(null);
+  const allIds = activityConsultants.map((c) => c.id);
+  const company = repeatSum(allIds);
+  const companyRate = company.closedWon ? (company.repeat / company.closedWon) * 100 : 0;
+  const companyStatus = repeatStatus(companyRate);
+
+  const managerRows = MANAGER_NAMES.map((name, mi) => {
+    const team = activityConsultants.filter((c) => c.managerIndex === mi);
+    const r = repeatSum(team.map((c) => c.id));
+    const rate = r.closedWon ? (r.repeat / r.closedWon) * 100 : 0;
+    return { name, team, ...r, rate, status: repeatStatus(rate) };
+  });
+
+  return (
+    <div>
+      <SectionLabel sub="Share of closed-won bookings from returning customers · benchmark 20–30%">Repeat Customer Rate</SectionLabel>
+
+      <div style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, padding: 22, marginBottom: 24 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
+          <div>
+            <div style={{ fontFamily: "Fraunces", fontSize: 30, color: T.textHi }}>{companyRate.toFixed(1)}%</div>
+            <div style={{ fontFamily: "Inter", fontSize: 11.5, color: T.textLo }}>Company-wide · {company.repeat.toLocaleString()} repeat of {company.closedWon.toLocaleString()} closed-won</div>
+          </div>
+          <span style={{ width: 11, height: 11, borderRadius: "50%", background: STATUS_COLOR[companyStatus], marginTop: 6 }} />
+        </div>
+        <RepeatRateBar rate={companyRate} status={companyStatus} />
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, fontFamily: "Inter", color: T.textLo, marginTop: 6 }}>
+          <span>0%</span><span>Benchmark band 20–30%</span><span>40%+</span>
+        </div>
+      </div>
+
+      <SectionLabel sub="Expand a manager to see their consultants">Sales Manager Rollup</SectionLabel>
+      <div style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, overflow: "hidden" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "0.4fr 1.6fr 1fr 1fr", padding: "10px 16px", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.04em", color: T.textLo, borderBottom: `1px solid ${T.line}`, fontFamily: "Inter" }}>
+          <span></span><span>Manager</span><span>Repeat / Closed</span><span>Rate</span>
+        </div>
+        {managerRows.map((r, i) => {
+          const isOpen = openManager === r.name;
+          return (
+            <div key={r.name} style={{ borderBottom: i < managerRows.length - 1 ? `1px solid ${T.line}` : "none" }}>
+              <div onClick={() => setOpenManager(isOpen ? null : r.name)} style={{ display: "grid", gridTemplateColumns: "0.4fr 1.6fr 1fr 1fr", padding: "13px 16px", alignItems: "center", cursor: "pointer" }}>
+                <span style={{ width: 10, height: 10, borderRadius: "50%", background: STATUS_COLOR[r.status] }} />
+                <span style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: "Inter", fontSize: 13, color: T.textHi }}>
+                  {isOpen ? <ChevronDown size={13} color={T.textLo} /> : <ChevronRight size={13} color={T.textLo} />}
+                  {r.name}<span style={{ color: T.textLo, fontSize: 11 }}>({r.team.length})</span>
+                </span>
+                <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{r.repeat} / {r.closedWon}</span>
+                <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{r.rate.toFixed(1)}%</span>
+              </div>
+              {isOpen && (
+                <div style={{ padding: "0 16px 14px 46px" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr 1fr", padding: "6px 4px", fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.04em", color: T.textLo, fontFamily: "Inter" }}>
+                    <span>Consultant</span><span>Repeat / Closed</span><span>Rate</span>
+                  </div>
+                  {r.team.map((c) => {
+                    const rr = consultantExtras[c.id].repeat;
+                    const rate = rr.closedWon ? (rr.repeat / rr.closedWon) * 100 : 0;
+                    const status = repeatStatus(rate);
+                    return (
+                      <div key={c.id} style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr 1fr", padding: "8px 4px", alignItems: "center", borderTop: `1px solid ${T.line}` }}>
+                        <span style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: "Inter", fontSize: 12.5, color: T.textHi }}>
+                          <span style={{ width: 7, height: 7, borderRadius: "50%", background: STATUS_COLOR[status] }} />{c.name}
+                        </span>
+                        <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{rr.repeat} / {rr.closedWon}</span>
+                        <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{rate.toFixed(1)}%</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function PaceSection() {
+  const [period, setPeriod] = useState("day");
+  const [openFU, setOpenFU] = useState(null);
+  const [openUC, setOpenUC] = useState(null);
+  const frac = PERIOD_FRAC[period];
+  const mult = PERIOD_MULT[period];
+  const fuMetric = METRICS.find((m) => m.key === "followUps");
+
+  const fuCompanyActual = activityConsultants.reduce((a, c) => a + c.metrics.followUps[period], 0);
+  const fuCompanyTarget = fuMetric.daily * mult * activityConsultants.length;
+  const fuManagerRows = MANAGER_NAMES.map((name, mi) => {
+    const team = activityConsultants.filter((c) => c.managerIndex === mi);
+    const actual = team.reduce((a, c) => a + c.metrics.followUps[period], 0);
+    const target = fuMetric.daily * mult * team.length;
+    return { name, team, actual, target, status: paceStatus(actual, target, frac) };
+  });
+
+  const allIds = activityConsultants.map((c) => c.id);
+  const ucCompany = unconvertedSum(allIds, period);
+  const ucCompanyRatio = ucCompany.total ? ucCompany.consultations / ucCompany.total : 0;
+  const ucManagerRows = MANAGER_NAMES.map((name, mi) => {
+    const team = activityConsultants.filter((c) => c.managerIndex === mi);
+    const u = unconvertedSum(team.map((c) => c.id), period);
+    const ratio = u.total ? u.consultations / u.total : 0;
+    return { name, team, ...u, ratio, status: unconvertedStatus(ratio) };
+  });
+
+  const paceCaption = {
+    day: "Today · 6 of 8 working hours elapsed (75%)",
+    week: "This week · Wed, working day 3 of 5 (55% elapsed)",
+    month: "This month · working day 12 of 22 (53% elapsed)",
+  }[period];
+
+  return (
+    <div>
+      <SectionLabel sub="Minimum 3 follow-ups/day per portfolio, and how many unconverted leads already had a consultation">Follow-Ups &amp; Unconverted Leads</SectionLabel>
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 18 }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          {[["day", "Daily"], ["week", "Weekly"], ["month", "Monthly"]].map(([id, label]) => (
+            <button key={id} onClick={() => setPeriod(id)} style={PILL(period === id)}>{label}</button>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 14, fontSize: 11.5, fontFamily: "Inter", color: T.textMid, alignItems: "center", flexWrap: "wrap" }}>
+          {["green", "amber", "red"].map((s) => (
+            <span key={s} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: STATUS_COLOR[s] }} />{STATUS_LABEL[s]}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div style={{ fontSize: 11.5, color: T.textLo, fontFamily: "Inter", marginBottom: 24, display: "flex", alignItems: "center", gap: 6 }}>
+        <Gauge size={12} /> {paceCaption}
+      </div>
+
+      <div style={{ marginBottom: 12 }}>
+        <SectionLabel sub="Target: 3 follow-ups/day per consultant's portfolio">Follow-Up Compliance</SectionLabel>
+      </div>
+      <div style={{ marginBottom: 24 }}>
+        <ExecMetricCard metric={fuMetric} actual={fuCompanyActual} target={fuCompanyTarget} frac={frac} />
+      </div>
+      <div style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, overflow: "hidden", marginBottom: 32 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "0.4fr 1.6fr 1fr", padding: "10px 16px", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.04em", color: T.textLo, borderBottom: `1px solid ${T.line}`, fontFamily: "Inter" }}>
+          <span></span><span>Manager</span><span>Follow-Ups</span>
+        </div>
+        {fuManagerRows.map((r, i) => {
+          const isOpen = openFU === r.name;
+          return (
+            <div key={r.name} style={{ borderBottom: i < fuManagerRows.length - 1 ? `1px solid ${T.line}` : "none" }}>
+              <div onClick={() => setOpenFU(isOpen ? null : r.name)} style={{ display: "grid", gridTemplateColumns: "0.4fr 1.6fr 1fr", padding: "13px 16px", alignItems: "center", cursor: "pointer" }}>
+                <span style={{ width: 10, height: 10, borderRadius: "50%", background: STATUS_COLOR[r.status] }} />
+                <span style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: "Inter", fontSize: 13, color: T.textHi }}>
+                  {isOpen ? <ChevronDown size={13} color={T.textLo} /> : <ChevronRight size={13} color={T.textLo} />}
+                  {r.name}<span style={{ color: T.textLo, fontSize: 11 }}>({r.team.length})</span>
+                </span>
+                <MetricCell metric={fuMetric} actual={r.actual} target={r.target} frac={frac} />
+              </div>
+              {isOpen && (
+                <div style={{ padding: "0 16px 14px 46px" }}>
+                  {r.team.map((c) => (
+                    <div key={c.id} style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr", padding: "6px 4px", alignItems: "center", borderTop: `1px solid ${T.line}` }}>
+                      <span style={{ fontFamily: "Inter", fontSize: 12.5, color: T.textHi }}>{c.name}</span>
+                      <MetricCell metric={fuMetric} actual={c.metrics.followUps[period]} target={fuMetric.daily * mult} frac={frac} />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ marginBottom: 12 }}>
+        <SectionLabel sub="How many unconverted leads already had a quote/consultation before stalling">Unconverted Leads</SectionLabel>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginBottom: 24 }}>
+        <StatusCard label="Total Unconverted" value={ucCompany.total.toLocaleString()} sub="Open or closed-lost, this period" />
+        <StatusCard label="Unconverted After Consultation" value={ucCompany.consultations.toLocaleString()} sub="Quote sent or negotiating, then stalled" />
+        <StatusCard label="Stall Ratio" value={`${(ucCompanyRatio * 100).toFixed(0)}%`} sub="Share of unconverted that got a consultation" status={unconvertedStatus(ucCompanyRatio)} />
+      </div>
+      <div style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, overflow: "hidden" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "0.4fr 1.6fr 1fr 1fr 1fr", padding: "10px 16px", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.04em", color: T.textLo, borderBottom: `1px solid ${T.line}`, fontFamily: "Inter" }}>
+          <span></span><span>Manager</span><span>Unconverted</span><span>After Consult</span><span>Ratio</span>
+        </div>
+        {ucManagerRows.map((r, i) => {
+          const isOpen = openUC === r.name;
+          return (
+            <div key={r.name} style={{ borderBottom: i < ucManagerRows.length - 1 ? `1px solid ${T.line}` : "none" }}>
+              <div onClick={() => setOpenUC(isOpen ? null : r.name)} style={{ display: "grid", gridTemplateColumns: "0.4fr 1.6fr 1fr 1fr 1fr", padding: "13px 16px", alignItems: "center", cursor: "pointer" }}>
+                <span style={{ width: 10, height: 10, borderRadius: "50%", background: STATUS_COLOR[r.status] }} />
+                <span style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: "Inter", fontSize: 13, color: T.textHi }}>
+                  {isOpen ? <ChevronDown size={13} color={T.textLo} /> : <ChevronRight size={13} color={T.textLo} />}
+                  {r.name}<span style={{ color: T.textLo, fontSize: 11 }}>({r.team.length})</span>
+                </span>
+                <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{r.total}</span>
+                <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{r.consultations}</span>
+                <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{(r.ratio * 100).toFixed(0)}%</span>
+              </div>
+              {isOpen && (
+                <div style={{ padding: "0 16px 14px 46px" }}>
+                  {r.team.map((c) => {
+                    const u = consultantExtras[c.id].unconverted[period];
+                    const ratio = u.total ? u.consultations / u.total : 0;
+                    return (
+                      <div key={c.id} style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr 1fr 1fr", padding: "6px 4px", alignItems: "center", borderTop: `1px solid ${T.line}` }}>
+                        <span style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: "Inter", fontSize: 12.5, color: T.textHi }}>
+                          <span style={{ width: 7, height: 7, borderRadius: "50%", background: STATUS_COLOR[unconvertedStatus(ratio)] }} />{c.name}
+                        </span>
+                        <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{u.total}</span>
+                        <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{u.consultations}</span>
+                        <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{(ratio * 100).toFixed(0)}%</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function LowQualitySection() {
+  const allFlags = activityConsultants.flatMap((c) => consultantExtras[c.id].lowQuality.map((lq) => ({ ...lq, consultant: c.name })));
+  const reasonCounts = {};
+  allFlags.forEach((f) => { reasonCounts[f.reason] = (reasonCounts[f.reason] || 0) + 1; });
+  const reasonList = Object.entries(reasonCounts).map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count);
+  const maxReason = Math.max(...reasonList.map((r) => r.count), 1);
+
+  const topOf = (tally) => Object.entries(tally).sort((a, b) => b[1] - a[1])[0][0];
+  const perConsultant = activityConsultants.map((c) => {
+    const flags = consultantExtras[c.id].lowQuality;
+    if (!flags.length) return null;
+    const reasonTally = {}, campaignTally = {}, marketTally = {};
+    flags.forEach((f) => {
+      reasonTally[f.reason] = (reasonTally[f.reason] || 0) + 1;
+      campaignTally[f.campaign] = (campaignTally[f.campaign] || 0) + 1;
+      marketTally[f.market] = (marketTally[f.market] || 0) + 1;
+    });
+    return { name: c.name, count: flags.length, topReason: topOf(reasonTally), topCampaign: topOf(campaignTally), topMarket: topOf(marketTally) };
+  }).filter(Boolean).sort((a, b) => b.count - a.count);
+  const shown = perConsultant.slice(0, 20);
+
+  return (
+    <div>
+      <SectionLabel sub="Leads consultants have flagged as low quality, with reason, campaign (UTM), and market">Low Quality Leads</SectionLabel>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.4fr", gap: 20, marginBottom: 28 }}>
+        <div style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, padding: 22 }}>
+          <SectionLabel sub={`${allFlags.length} flagged leads, company-wide`}>By Reason</SectionLabel>
+          {reasonList.map((r) => (
+            <div key={r.reason} style={{ marginBottom: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4, fontFamily: "Inter", color: T.textHi }}>
+                <span>{r.reason}</span><span style={{ fontFamily: "IBM Plex Mono", color: T.textMid }}>{r.count}</span>
+              </div>
+              <div style={{ height: 6, background: T.bgRaised, borderRadius: 3, overflow: "hidden" }}>
+                <div style={{ width: `${(r.count / maxReason) * 100}%`, height: "100%", background: T.rust }} />
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, padding: 22, display: "flex", flexDirection: "column", justifyContent: "center", gap: 12 }}>
+          <StatusCard label="Total Flagged" value={allFlags.length.toLocaleString()} sub={`Across ${perConsultant.length} of ${activityConsultants.length} consultants`} />
+          <StatusCard label="Top Reason" value={reasonList[0] ? reasonList[0].reason : "—"} sub={reasonList[0] ? `${reasonList[0].count} leads` : ""} />
+        </div>
+      </div>
+
+      <div style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, padding: 22 }}>
+        <SectionLabel sub={`Top ${shown.length} of ${perConsultant.length} consultants with flagged leads, by count`}>By Consultant</SectionLabel>
+        <div style={{ display: "grid", gridTemplateColumns: "1.4fr 0.6fr 1.4fr 1.3fr 1fr", padding: "8px 4px", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.04em", color: T.textLo, borderBottom: `1px solid ${T.line}`, fontFamily: "Inter" }}>
+          <span>Consultant</span><span>Count</span><span>Top Reason</span><span>Top Campaign (UTM)</span><span>Top Market</span>
+        </div>
+        {shown.map((c, i, arr) => (
+          <div key={c.name} style={{ display: "grid", gridTemplateColumns: "1.4fr 0.6fr 1.4fr 1.3fr 1fr", padding: "10px 4px", alignItems: "center", borderBottom: i < arr.length - 1 ? `1px solid ${T.line}` : "none" }}>
+            <span style={{ fontFamily: "Inter", fontSize: 12.5, color: T.textHi }}>{c.name}</span>
+            <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.rust }}>{c.count}</span>
+            <span style={{ fontFamily: "Inter", fontSize: 12, color: T.textMid }}>{c.topReason}</span>
+            <span style={{ fontFamily: "IBM Plex Mono", fontSize: 11, color: T.textMid }}>{c.topCampaign}</span>
+            <span style={{ fontFamily: "Inter", fontSize: 12, color: T.textMid }}>{c.topMarket}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ConsultantsTab() {
+  const [view, setView] = useState("leaderboard");
+  const views = [
+    { id: "leaderboard", label: "Leaderboard" },
+    { id: "pipeline", label: "Pipeline" },
+    { id: "repeat", label: "Repeat Customers" },
+    { id: "pace", label: "Follow-Ups & Unconverted" },
+    { id: "lowquality", label: "Low Quality Leads" },
+  ];
+  return (
+    <div>
+      <SectionLabel sub="Everything tracked at the consultant level — performance, pipeline, and lead quality">Consultants</SectionLabel>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 26 }}>
+        {views.map((v) => (
+          <button key={v.id} onClick={() => setView(v.id)} style={PILL(view === v.id)}>{v.label}</button>
+        ))}
+      </div>
+      {view === "leaderboard" && <LeaderboardSection />}
+      {view === "pipeline" && <PipelineSection />}
+      {view === "repeat" && <RepeatCustomersSection />}
+      {view === "pace" && <PaceSection />}
+      {view === "lowquality" && <LowQualitySection />}
     </div>
   );
 }
@@ -603,49 +1180,6 @@ function AudienceTab() {
               </div>
               <span style={{ fontFamily: "IBM Plex Mono", fontSize: 12, color: T.textHi }}>{c.bookRate}%</span>
             </span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function DecisionsTab() {
-  const icon = (s) => s === "done" ? <CheckCircle2 size={16} color={T.sage} /> : s === "progress" ? <Clock size={16} color={T.gold} /> : <Circle size={16} color={T.textLo} />;
-  return (
-    <div>
-      <SectionLabel sub="Live status of Horizon 1 approvals">Decisions Needed Now</SectionLabel>
-      <div style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, overflow: "hidden", marginBottom: 28 }}>
-        {decisions.map((d, i) => (
-          <div key={d.title} style={{
-            display: "flex", alignItems: "center", gap: 12, padding: "16px 20px",
-            borderBottom: i < decisions.length - 1 ? `1px solid ${T.line}` : "none",
-          }}>
-            {icon(d.status)}
-            <span style={{ fontFamily: "Inter", fontSize: 13.5, color: d.status === "pending" ? T.textMid : T.textHi }}>{d.title}</span>
-            <span style={{
-              marginLeft: "auto", fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.05em",
-              color: d.status === "done" ? T.sage : d.status === "progress" ? T.gold : T.textLo, fontFamily: "Inter",
-            }}>{d.status === "progress" ? "in progress" : d.status}</span>
-          </div>
-        ))}
-      </div>
-
-      <div style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, padding: 22 }}>
-        <SectionLabel sub="Approved envelope vs. actual, Horizon 1">Budget Pacing</SectionLabel>
-        {[
-          { name: "Meta test spend", approved: 200000, actual: 184000 },
-          { name: "Nurture tooling", approved: 45000, actual: 41000 },
-          { name: "DV360 pilot", approved: 80000, actual: 62000 },
-        ].map((b) => (
-          <div key={b.name} style={{ marginBottom: 16 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 5, fontFamily: "Inter", color: T.textHi }}>
-              <span>{b.name}</span>
-              <span style={{ fontFamily: "IBM Plex Mono", color: T.textMid }}>{fmt(b.actual)} / {fmt(b.approved)}</span>
-            </div>
-            <div style={{ height: 7, background: T.bgRaised, borderRadius: 3, overflow: "hidden" }}>
-              <div style={{ width: `${(b.actual / b.approved) * 100}%`, height: "100%", background: b.actual > b.approved ? T.rust : T.gold, borderRadius: 3 }} />
-            </div>
           </div>
         ))}
       </div>
@@ -814,13 +1348,13 @@ function ActivityTab() {
   );
 }
 
-function PipelineFunnel({ market }) {
+function PipelineFunnel({ data, lostLabel = "Closed Lost (this period)" }) {
   const stages = [
-    { label: "New Lead", count: market.newLead },
-    { label: "Contacted", count: market.contacted },
-    { label: "Quote Sent", count: market.quoteSent },
-    { label: "Negotiating", count: market.negotiating },
-    { label: "Closed Won", count: market.totalBookings },
+    { label: "New Lead", count: data.newLead },
+    { label: "Contacted", count: data.contacted },
+    { label: "Quote Sent", count: data.quoteSent },
+    { label: "Negotiating", count: data.negotiating },
+    { label: "Closed Won", count: data.closedWon },
   ];
   const max = Math.max(...stages.map((s) => s.count), 1);
   return (
@@ -840,8 +1374,8 @@ function PipelineFunnel({ market }) {
         </div>
       ))}
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, fontFamily: "Inter", color: T.rust, marginTop: 10, paddingTop: 10, borderTop: `1px solid ${T.line}` }}>
-        <span>Closed Lost (this period)</span>
-        <span style={{ fontFamily: "IBM Plex Mono" }}>{market.closedLost.toLocaleString()}</span>
+        <span>{lostLabel}</span>
+        <span style={{ fontFamily: "IBM Plex Mono" }}>{data.closedLost.toLocaleString()}</span>
       </div>
     </div>
   );
@@ -944,7 +1478,7 @@ function MarketsTab() {
 
         <div style={{ background: T.bgCard, border: `1px solid ${T.line}`, borderRadius: 6, padding: 22 }}>
           <SectionLabel sub={`${label} · lead comes in → assigned → worked → closed`}>Pipeline Snapshot</SectionLabel>
-          <PipelineFunnel market={market} />
+          <PipelineFunnel data={{ newLead: market.newLead, contacted: market.contacted, quoteSent: market.quoteSent, negotiating: market.negotiating, closedWon: market.totalBookings, closedLost: market.closedLost }} />
         </div>
       </div>
 
@@ -1018,7 +1552,6 @@ export default function App() {
     { id: "activity", label: "Activity & Targets" },
     { id: "markets", label: "Markets" },
     { id: "audience", label: "Audience & Retargeting" },
-    { id: "decisions", label: "Decisions & Budget" },
   ];
 
   return (
@@ -1071,7 +1604,6 @@ export default function App() {
         {tab === "activity" && <ActivityTab />}
         {tab === "markets" && <MarketsTab />}
         {tab === "audience" && <AudienceTab />}
-        {tab === "decisions" && <DecisionsTab />}
 
         <div style={{ marginTop: 40, paddingTop: 16, borderTop: `1px solid ${T.line}`, display: "flex", justifyContent: "space-between", fontSize: 11, color: T.textLo, fontFamily: "Inter" }}>
           <span>ASG Growth Dashboard — Example</span>
